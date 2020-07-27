@@ -203,7 +203,7 @@ var testMiner = &cobra.Command{
 		ctx, cancel := context.WithCancel(context.Background())
 		exit.GlobalExitHandler.AddCancel(cancel)
 
-		client, err := stratum.NewClient("user", "miner", "password", "invitecode", "payoutaddress", config.CompiledInVersion)
+		client, err := stratum.NewClient("user", "miner", "password", "invitecode", "payoutaddress", config.CompiledInVersion, nil)
 		if err != nil {
 			panic(err)
 		}

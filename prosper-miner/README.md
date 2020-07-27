@@ -56,3 +56,12 @@ Flags:
   -u, --user string         Username to log into the mining pool
 
 ```
+
+# Environment variables
+
+The `prosper-miner` program can use the following environment variables:
+
+<dl>
+  <dt><var>PROSPERPOOL_CONFIG</var></dt>
+  <dd>When the <var>PROSPERPOOL_CONFIG</var> variable is set, <code>prosper-miner</code> will use the configuration file identified <var>PROSPERPOOL_CONFIG</var> unless the <code>--config</code> argument is passed.</dd>
+</dl>

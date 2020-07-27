@@ -19,9 +19,12 @@ import (
 	"github.com/FactomWyomingEntity/prosper-pool/loghelp"
 	"github.com/FactomWyomingEntity/prosper-pool/profile"
 	"github.com/FactomWyomingEntity/prosper-pool/stratum"
+	"github.com/kardianos/service"
 	"github.com/pegnet/pegnet/modules/factoidaddress"
 	log "github.com/sirupsen/logrus"
+	"github.com/spf13/afero"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"golang.org/x/crypto/ssh/terminal"
 )
@@ -33,6 +36,7 @@ const (
 	ConfigUserName       = "miner.username"
 	ConfigMinerName      = "miner.minerid"
 )
+const UserConfigFilePath = "$HOME/.prosper/prosper-miner.toml"
 
 var rxEmail = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$")
 
@@ -60,6 +64,9 @@ func init() {
 	rootCmd.Flags().IntP("miners", "t", runtime.NumCPU(), "Number of mining threads")
 
 	rootCmd.AddCommand(properties)
+	rootCmd.AddCommand(feedCmd)
+	rootCmd.AddCommand(rpcCmd)
+	rootCmd.AddCommand(serviceCmd)
 }
 
 // Pool entry point
@@ -79,6 +86,10 @@ var rootCmd = &cobra.Command{
 	Short:   "Launch miner to communicate with the prosper mining pool.",
 	PreRunE: OpenConfig,
 	Run: func(cmd *cobra.Command, args []string) {
+		if !service.Interactive() {
+			runMinerService()
+			return
+		}
 		ctx, cancel := context.WithCancel(context.Background())
 		exit.GlobalExitHandler.AddCancel(cancel)
 		keyboardReader := bufio.NewReader(os.Stdin)
@@ -125,7 +136,8 @@ var rootCmd = &cobra.Command{
 			return
 		}
 
-		client, err := stratum.NewClient(username, minerid, password, invitecode, payoutaddress, config.CompiledInVersion)
+		notifications := stratum.NewNotificationChannels()
+		client, err := stratum.NewClient(username, minerid, password, invitecode, payoutaddress, config.CompiledInVersion, notifications)
 		if err != nil {
 			panic(err)
 		}
@@ -158,10 +170,6 @@ var rootCmd = &cobra.Command{
 		log.Infof("Username: %s, MinerID: %s", username, minerid)
 		log.Infof("Using %d threads", miners)
 
-		exit.GlobalExitHandler.AddExit(func() error {
-			return client.Close()
-		})
-
 		err = client.Connect(viper.GetString(ConfigHost))
 		if err != nil {
 			panic(err)
@@ -170,6 +178,7 @@ var rootCmd = &cobra.Command{
 		client.Handshake()
 
 		go func() {
+			stopFeed := make(chan int)
 			for {
 				userCommand, _ := keyboardReader.ReadString('\n')
 				words := strings.Fields(userCommand)
@@ -185,6 +194,11 @@ var rootCmd = &cobra.Command{
 						if len(words) > 1 {
 							client.SuggestTarget(words[1])
 						}
+					case "startfeed":
+						fmt.Println("Use 'stopfeed' to stop")
+						go startFeed(stopFeed, notifications)
+					case "stopfeed":
+						stopFeed <- 1
 					default:
 						fmt.Println("Client command not supported: ", words[0])
 					}
@@ -196,28 +210,21 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// OpenConfig finds and loads the Prosper Miner configuration file.
 func OpenConfig(cmd *cobra.Command, args []string) error {
 	initLogger(cmd)
-	closeHandle()
+	handleSigInt()
+	fs := afero.NewOsFs()
+	viper.SetFs(fs)
 
-	configPath, _ := cmd.Flags().GetString("config")
-	configCustom := true
-	if configPath == "" {
-		if runtime.GOOS == "windows" {
-			u, err := user.Current()
-			if err == nil {
-				_ = os.Setenv("HOME", u.HomeDir)
-			}
-		}
-		configPath = "$HOME/.prosper/prosper-miner.toml" // Default
-		configCustom = false
+	if service.Interactive() {
+		ensureEnvHomeIsSet()
 	}
+	path, configCustom, err := selectConfigFile(cmd.Flags(), fs)
 
 	if pro, _ := cmd.Flags().GetBool("profile"); pro {
 		go profile.StartProfiler(false, 6050) // Only localhost, on 6050
 	}
-
-	path := os.ExpandEnv(configPath)
 
 	dir := filepath.Dir(path)
 	name := filepath.Base(path)
@@ -226,7 +233,7 @@ func OpenConfig(cmd *cobra.Command, args []string) error {
 	ext := filepath.Ext(name)
 	viper.SetConfigName(strings.TrimSuffix(name, ext))
 
-	info, err := os.Stat(path)
+	info, err := fs.Stat(path)
 	exists := info != nil && !os.IsNotExist(err)
 
 	// Set default config values
@@ -241,7 +248,7 @@ func OpenConfig(cmd *cobra.Command, args []string) error {
 		log.Infof("Writing config to file at %s", path)
 		// Make the config
 		dir := filepath.Dir(path)
-		err := os.MkdirAll(dir, 0777)
+		err := fs.MkdirAll(dir, 0777)
 		if err != nil {
 			return fmt.Errorf("failed to make config path: %s", err.Error())
 		}
@@ -272,8 +279,8 @@ func GenerateMinerID() string {
 	return NewRandomName(time.Now().UnixNano()).Haikunate()
 }
 
-func closeHandle() {
-	// Catch ctl+c
+func handleSigInt() {
+	// Catch ctrl + C (SIGINT)
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
 	go func() {
@@ -285,6 +292,15 @@ func closeHandle() {
 		// If something is hanging, we have to kill it
 		os.Exit(0)
 	}()
+}
+
+func ensureEnvHomeIsSet() {
+	if runtime.GOOS == "windows" {
+		u, err := user.Current()
+		if err == nil {
+			_ = os.Setenv("HOME", u.HomeDir)
+		}
+	}
 }
 
 func initLogger(cmd *cobra.Command) {
@@ -305,4 +321,54 @@ func initLogger(cmd *cobra.Command) {
 	}
 
 	log.StandardLogger().Hooks.Add(&loghelp.ContextHook{})
+}
+
+// This function looks for a configuration file in the following locations:
+//
+// 1. If the user has specified a path on the command line, the
+//    specified path is given first priority.
+// 2. If the program is being run interactively, a
+//    configuration file at $HOME/.prosper/prosper-miner.toml
+//    is given second priority.
+// 3. The path returned by the getSystemConfigFilePath function
+//    —see the minerconfig_$GOOS.go file for your platform—is
+//    given lowest priority.
+func selectConfigFile(flags *pflag.FlagSet, fs afero.Fs) (filePath string, fileSpecified bool, err error) {
+	configFlag, err := flags.GetString("config")
+	if err == nil {
+		// Specified config file path is first priority…
+		if configFlag != "" {
+			return configFlag, true, nil
+		} else {
+			// …otherwise, look for the file
+			_, homeExists := os.LookupEnv("HOME")
+			filePath := os.ExpandEnv(UserConfigFilePath)
+			filePathExists, err := afero.Exists(fs, filePath)
+			if err != nil {
+				return "", false, err
+			}
+			if !homeExists || !filePathExists {
+				filePath, err = getSystemConfigFilePath()
+				if err != nil {
+					return "", false, err
+				}
+			}
+			return filePath, false, nil
+		}
+	} else {
+		return "", false, err
+	}
+}
+
+func startFeed(stop chan int, nc *stratum.NotificationChannels) {
+	for {
+		select {
+		case <-stop:
+			return
+		case i := <-nc.HashRateChannel:
+			fmt.Printf("Current hash rate: %.2f\n", i)
+		case <-nc.SubmissionChannel:
+			fmt.Println("A share was submitted")
+		}
+	}
 }

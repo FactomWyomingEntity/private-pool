@@ -7,10 +7,10 @@ require (
 	github.com/Factom-Asset-Tokens/factom v0.0.0-20191120022136-7bf60a31a324
 	github.com/andybalholm/cascadia v1.1.0 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20190424111038-f61b66f89f4a // indirect
-	github.com/aws/aws-sdk-go v1.25.12 // indirect
 	github.com/cenkalti/backoff v2.1.1+incompatible
 	github.com/disintegration/imaging v1.6.1 // indirect
 	github.com/dustin/go-humanize v1.0.0
+	github.com/ethereum/go-ethereum v1.9.11
 	github.com/fatih/color v1.7.0 // indirect
 	github.com/gorilla/rpc v1.2.0
 	github.com/gorilla/sessions v1.2.0 // indirect
@@ -18,10 +18,11 @@ require (
 	github.com/jinzhu/configor v1.1.1 // indirect
 	github.com/jinzhu/copier v0.0.0-20190924061706-b57f9002281a // indirect
 	github.com/jinzhu/gorm v1.9.11
+	github.com/kardianos/service v1.0.0
 	github.com/mattn/go-colorable v0.1.4 // indirect
 	github.com/mattn/go-isatty v0.0.10 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.2 // indirect
-	github.com/pegnet/LXRHash v0.0.0-20200205233914-cceb516c4b7f
+	github.com/pegnet/LXRHash v0.0.0-20200611040256-b33327b51c91
 	github.com/pegnet/pegnet v0.5.0
 	github.com/pegnet/pegnetd v0.1.2-0.20191011183044-5eca2d08a5e8
 	github.com/prometheus/client_golang v1.0.0
@@ -56,4 +57,6 @@ require (
 	go.uber.org/atomic v1.4.0
 	go.uber.org/ratelimit v0.1.0
 	golang.org/x/crypto v0.0.0-20190701094942-4def268fd1a4
+	golang.org/x/sync v0.0.0-20190423024810-112230192c58
+	golang.org/x/sys v0.0.0-20191008105621-543471e840be
 )
