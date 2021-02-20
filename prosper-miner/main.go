@@ -125,7 +125,8 @@ var rootCmd = &cobra.Command{
 			return
 		}
 
-		client, err := stratum.NewClient(username, minerid, password, invitecode, payoutaddress, config.CompiledInVersion)
+		notifications := stratum.NewNotificationChannels()
+		client, err := stratum.NewClient(username, minerid, password, invitecode, payoutaddress, config.CompiledInVersion, notifications)
 		if err != nil {
 			panic(err)
 		}
@@ -170,6 +171,7 @@ var rootCmd = &cobra.Command{
 		client.Handshake()
 
 		go func() {
+			stopFeed := make(chan int)
 			for {
 				userCommand, _ := keyboardReader.ReadString('\n')
 				words := strings.Fields(userCommand)
@@ -185,6 +187,11 @@ var rootCmd = &cobra.Command{
 						if len(words) > 1 {
 							client.SuggestTarget(words[1])
 						}
+					case "startfeed":
+						fmt.Println("Use 'stopfeed' to stop")
+						go startFeed(stopFeed, notifications)
+					case "stopfeed":
+						stopFeed <- 1
 					default:
 						fmt.Println("Client command not supported: ", words[0])
 					}
@@ -305,4 +312,17 @@ func initLogger(cmd *cobra.Command) {
 	}
 
 	log.StandardLogger().Hooks.Add(&loghelp.ContextHook{})
+}
+
+func startFeed(stop chan int, nc *stratum.NotificationChannels) {
+	for {
+		select {
+		case <-stop:
+			return
+		case i := <-nc.HashRateChannel:
+			fmt.Printf("Current hash rate: %.2f\n", i)
+		case <-nc.SubmissionChannel:
+			fmt.Println("A share was submitted")
+		}
+	}
 }

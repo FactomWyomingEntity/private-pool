@@ -40,6 +40,8 @@ type Client struct {
 	miners         []*ControlledMiner
 	successes      chan *mining.Winner
 	totalSuccesses uint64 // Total submitted shares
+	notificationChannels *NotificationChannels
+	shutdown       chan int
 
 	subscriptions []Subscription
 	requestsMade  map[int32]func(Response)
@@ -61,7 +63,20 @@ func (c *ControlledMiner) SendCommand(command *mining.MinerCommand) bool {
 	}
 }
 
-func NewClient(username, minername, password, invitecode, payoutaddress, version string) (*Client, error) {
+type NotificationChannels struct {
+	HashRateChannel   chan float64
+	SubmissionChannel chan int
+}
+
+func NewNotificationChannels() (*NotificationChannels) {
+	nc := &NotificationChannels {
+		HashRateChannel: make(chan float64),
+		SubmissionChannel: make(chan int),
+	}
+	return nc
+}
+
+func NewClient(username, minername, password, invitecode, payoutaddress, version string, notificationChannels *NotificationChannels) (*Client, error) {
 	c := new(Client)
 	c.autoreconnect = true
 	c.version = version
@@ -77,6 +92,10 @@ func NewClient(username, minername, password, invitecode, payoutaddress, version
 
 	successChannel := make(chan *mining.Winner, 100)
 	c.successes = successChannel
+	c.notificationChannels = notificationChannels
+	// Increate the buffer size for the shutdown channel for each goroutine
+	// that will listen to the shutdown channel.
+	c.shutdown = make(chan int, 1)
 
 	go c.ListenForSuccess()
 	//
@@ -94,6 +113,8 @@ func (c *Client) InitMiners(num int) {
 			Miner:          mining.NewPegnetMiner(uint32(i), commandChannel, c.successes),
 		}
 	}
+	// Once the miners are initialized, there can be a hash rate to report.
+	go c.ReportHashRate()
 }
 
 func (c *Client) SetFakeHashRate(rate int) {
@@ -313,6 +334,10 @@ func (c *Client) SuggestTarget(preferredTarget string) error {
 
 func (c *Client) Close() error {
 	c.autoreconnect = false
+	// Tell goroutines to shutdown
+	for i, j := 0, cap(c.shutdown); i < j; i++ {
+		c.shutdown <- 1
+	}
 	if !reflect.ValueOf(c.conn).IsNil() {
 		log.Infof("shutting down stratum client")
 		return c.conn.Close()
@@ -523,6 +548,28 @@ func (c *Client) AggregateStats(job int32, stats chan *mining.SingleMinerStats, 
 	log.WithFields(groupStats.LogFields()).Info("job miner stats")
 }
 
+func (c *Client) AggregateStatsAndNotify(job int32, stats chan *mining.SingleMinerStats, l int) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second * 3)
+	defer cancel() // Must clean up context to avoid a memory leak
+	groupStats := mining.NewGroupMinerStats(job)
+
+	for i := 0; i < l; i ++ {
+		select {
+		case stat := <-stats:
+			groupStats.Miners[stat.ID] = stat
+		case <-ctx.Done():
+		}
+	}
+	if c.notificationChannels != nil {
+		// Notify listeners.  Do nothing if no goroutines are
+		// listening.
+		select {
+		case c.notificationChannels.HashRateChannel <- groupStats.TotalHashPower():
+		default:
+		}
+	}
+}
+
 func (c *Client) HandleResponse(resp Response) {
 	c.Lock()
 	if funcToPerform, ok := c.requestsMade[resp.ID]; ok {
@@ -546,7 +593,34 @@ func (c *Client) ListenForSuccess() {
 				log.WithError(err).Error("failed to submit to server")
 			} else {
 				c.totalSuccesses++
+				if c.notificationChannels != nil {
+					// Notify listeners.  Do nothing if no
+					// goroutines are listening.
+					select {
+					case c.notificationChannels.SubmissionChannel <- 1:
+					default:
+					}
+				}
 			}
+		}
+	}
+}
+
+func (c *Client) ReportHashRate() {
+	ticker := time.NewTicker(time.Second * 10)
+	for {
+		select {
+		case <- c.shutdown:
+			ticker.Stop()
+			return
+		case <- ticker.C:
+			existingJobID, _ := strconv.ParseInt(c.currentJobID, 10, 64)
+			stats := make(chan *mining.SingleMinerStats, len(c.miners))
+			command := mining.BuildCommand().
+				CurrentHashRate(stats).
+				Build()
+			c.SendCommand(command)
+			go c.AggregateStatsAndNotify(int32(existingJobID), stats, len(c.miners))
 		}
 	}
 }
